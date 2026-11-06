@@ -7,6 +7,7 @@ export interface ProviderItem {
   configured: boolean
   default_url?: string
   requires_custom_url?: boolean
+  is_local_bridge?: boolean
 }
 
 export interface ProviderCategoryData {

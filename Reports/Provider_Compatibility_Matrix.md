@@ -152,6 +152,38 @@ The results below reflect actual laboratory tests executed on this platform. Pre
 
 ## 4. Architectural Verification Conclusions
 
-1. **Seamless Provider Switching:** Switching providers in the React dashboard instantly swaps the active adapter in `main.py` without restarting the FastAPI backend.
-2. **Graceful Degraded States:** When a local server is offline (e.g., `llama-server` on port 8080), the gateway returns clear, actionable error messages (`HTTP 503: Could not connect to llama.cpp Server. Verify that the service is running.`) instead of crashing or hanging.
+1. **Seamless Provider Switching:** Switching providers in the React dashboard instantly swaps the active adapter without restarting any server or reloading the application.
+2. **Graceful Degraded States:** When a local server is offline (e.g., `llama-server` on port 8080), the gateway and bridge return clear, actionable error messages with step-by-step terminal instructions instead of crashing or hanging.
 3. **Verified Multi-Provider Working POC:** Google Gemini (Cloud) and Ollama `llama3.2:1b` (Local) are independently verified and operational on this machine.
+
+---
+
+## 5. Local Runtime Bridge & Cloud Deployment Architecture (Render + Client Localhost)
+
+### 5.1. The Cloud-to-Localhost Architectural Challenge
+When Model Gateway is deployed to cloud platforms such as **Render**:
+- The Render container runs Linux in the cloud and does **not** host local AI weights, nor should it.
+- Model Gateway visitors run personal AI runtimes (Ollama, llama.cpp) on **their own computers**.
+- Directing local AI requests from the visitor through the Render backend would attempt to connect to `127.0.0.1` inside the cloud container, failing completely.
+
+### 5.2. Unified Dual-Path Architecture
+Model Gateway resolves this through a clean client-side provider abstraction:
+1. **Cloud Providers (Gemini, OpenAI, Qwen, Custom):**
+   $$\text{Browser} \longrightarrow \text{Render FastAPI Backend} \longrightarrow \text{Provider Cloud API}$$
+   - API keys are maintained server-side in `.env`, strictly hidden from visitors.
+2. **Local Inference Runtimes (Ollama, llama.cpp):**
+   $$\text{Browser} \longrightarrow \text{Visitor Localhost } (127.0.0.1:11434 \text{ or } 127.0.0.1:8080)$$
+   - Prompts and generated tokens travel directly between the browser and the visitor's local daemon.
+   - Zero model weights or prompts route through Render, guaranteeing maximum privacy and sub-millisecond network transit.
+
+### 5.3. Web Browser CORS Configuration (`OLLAMA_ORIGINS`)
+Modern browsers restrict cross-origin access from web domains to private networks (`127.0.0.1`). Ollama provides native support for browser web clients via the `OLLAMA_ORIGINS` environment variable:
+- **Windows:** `setx OLLAMA_ORIGINS "*"` (restart Ollama from the Windows Taskbar tray).
+- **macOS:** `launchctl setenv OLLAMA_ORIGINS "*"` (restart Ollama application).
+- **Linux:** Add `Environment="OLLAMA_ORIGINS=*"` to `/etc/systemd/system/ollama.service.d/override.conf`, then `sudo systemctl daemon-reload && sudo systemctl restart ollama`.
+
+### 5.4. Empirical Test Verification
+- **Ollama Direct Localhost Detection:** Discovered installed model `llama3.2:1b` via `http://127.0.0.1:11434/api/tags`.
+- **Ollama Direct Localhost Generation:** Successfully returned chat completion via `POST /api/chat`.
+- **llama.cpp Offline Detection:** Correctly reported offline status when port 8080 is inactive, providing command instructions.
+- **Production Build:** `npm run build` compiled 2,182 modules cleanly with 0 TypeScript or bundler errors.

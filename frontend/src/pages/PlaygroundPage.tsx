@@ -7,6 +7,9 @@ import {
   Check,
   RefreshCw,
   AlertCircle,
+  AlertTriangle,
+  CheckCircle2,
+  XCircle,
   Terminal,
   Server,
   Sparkles,
@@ -18,13 +21,16 @@ import {
   MoreVertical,
   Download,
   Eraser,
+  ExternalLink,
+  ShieldCheck,
+  Zap,
 } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
 import { Input } from '@/components/ui/input'
 import { Textarea } from '@/components/ui/textarea'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
-import { Alert, AlertDescription } from '@/components/ui/alert'
+import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert'
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip'
 import { ScrollArea } from '@/components/ui/scroll-area'
 import {
@@ -35,7 +41,8 @@ import {
   DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu'
-import { api } from '@/services/api'
+import { api, localRuntimeBridge } from '@/services/api'
+import type { LocalRuntimeCheckResult } from '@/services/localRuntimeBridge'
 import { useGateway } from '@/hooks/useGateway'
 import type { ChatMessage, Conversation, ProviderCategory } from '@/types'
 import { toast } from 'sonner'
@@ -51,6 +58,11 @@ export function PlaygroundPage() {
   const [availableModels, setAvailableModels] = useState<string[]>([])
   const [loadingModels, setLoadingModels] = useState<boolean>(false)
   const [modelNotice, setModelNotice] = useState<string | null>(null)
+
+  // Local Runtime Bridge status (direct browser -> localhost)
+  const [localBridgeStatus, setLocalBridgeStatus] = useState<LocalRuntimeCheckResult | null>(null)
+  const [showTroubleshooting, setShowTroubleshooting] = useState<boolean>(false)
+  const [copiedCommand, setCopiedCommand] = useState<string | null>(null)
 
   // State: Conversations & Messages
   const [conversations, setConversations] = useState<Conversation[]>(() => {
@@ -71,7 +83,8 @@ export function PlaygroundPage() {
           {
             id: 'm1',
             role: 'assistant',
-            content: 'Hello! I am connected to the unified Model Gateway. You can send prompts, switch between Cloud and Local AI providers, or test hardware limits in real-time.',
+            content:
+              'Hello! I am connected to the unified Model Gateway. You can send prompts, switch between Cloud and Local AI providers, or test hardware limits in real-time.\n\nWhen using Local AI, requests route directly from your browser to your local Ollama or llama.cpp daemon.',
             timestamp: Date.now(),
             provider: 'gemini',
             providerName: 'Google Gemini',
@@ -116,21 +129,57 @@ export function PlaygroundPage() {
     async (cat: ProviderCategory, prov: string, customUrl?: string) => {
       setLoadingModels(true)
       setModelNotice(null)
+
+      if (cat === 'local') {
+        try {
+          const check =
+            prov === 'llamacpp'
+              ? await localRuntimeBridge.checkLlamaCppStatus(customUrl)
+              : await localRuntimeBridge.checkOllamaStatus(customUrl)
+          setLocalBridgeStatus(check)
+          setAvailableModels(check.models || [])
+
+          if (check.status === 'connected') {
+            setShowTroubleshooting(false)
+            if (check.models && check.models.length > 0) {
+              if (!check.models.includes(modelId)) {
+                setModelId(check.models[0])
+              }
+            } else {
+              setModelNotice('Runtime is online but no models were found. Pull a model using the command below.')
+              setShowTroubleshooting(true)
+            }
+          } else {
+            setShowTroubleshooting(true)
+            setModelNotice(check.message)
+          }
+        } catch (err: any) {
+          setAvailableModels([])
+          setModelNotice(err.message || 'Unable to reach local AI runtime.')
+          setShowTroubleshooting(true)
+        } finally {
+          setLoadingModels(false)
+        }
+        return
+      }
+
+      // Cloud category
+      setLocalBridgeStatus(null)
+      setShowTroubleshooting(false)
       try {
         const res = await api.getModels(cat, prov, customUrl)
         setAvailableModels(res.models || [])
         setModelNotice(res.notice)
 
-        // Set default model if current is not in list
         if (res.models && res.models.length > 0) {
           if (!res.models.includes(modelId)) {
             setModelId(res.models[0])
           }
         }
       } catch (err: any) {
-        console.error('Failed to discover models:', err)
+        console.error('Failed to discover cloud models:', err)
         setAvailableModels([])
-        setModelNotice(err.message || 'Unable to retrieve model list for this provider.')
+        setModelNotice(err.message || 'Unable to retrieve model list for this cloud provider.')
       } finally {
         setLoadingModels(false)
       }
@@ -199,6 +248,8 @@ export function PlaygroundPage() {
         providerId === 'custom' ? customBaseUrl : undefined
       )
       toast.success(res.message)
+      // Re-fetch models on successful test
+      fetchModelsForProvider(category, providerId, providerId === 'custom' ? customBaseUrl : undefined)
     } catch (err: any) {
       toast.error(`Connection failed: ${err.message}`)
     } finally {
@@ -213,6 +264,12 @@ export function PlaygroundPage() {
 
     if (!modelId) {
       toast.error('Please select an active model before sending a message.')
+      return
+    }
+
+    if (category === 'local' && localBridgeStatus && localBridgeStatus.status !== 'connected') {
+      toast.error(`Local runtime is ${localBridgeStatus.status}. Please check setup guide above.`)
+      setShowTroubleshooting(true)
       return
     }
 
@@ -313,6 +370,9 @@ export function PlaygroundPage() {
         })
       )
       toast.error(`Provider error: ${err.message}`)
+      if (category === 'local') {
+        setShowTroubleshooting(true)
+      }
     } finally {
       setGenerating(false)
       textareaRef.current?.focus()
@@ -334,6 +394,13 @@ export function PlaygroundPage() {
     setCopiedId(id)
     toast.success('Response copied to clipboard.')
     setTimeout(() => setCopiedId(null), 2000)
+  }
+
+  const handleCopyCommand = (cmd: string) => {
+    navigator.clipboard.writeText(cmd)
+    setCopiedCommand(cmd)
+    toast.success('Command copied.')
+    setTimeout(() => setCopiedCommand(null), 2000)
   }
 
   // Keydown handler: Enter to send, Shift+Enter for newline
@@ -390,7 +457,6 @@ export function PlaygroundPage() {
       return (
         <span key={index}>
           {lines.map((line, lIdx) => {
-            // Replace **bold**
             const boldParts = line.split(/(\*\*.*?\*\*)/g)
             return (
               <span key={lIdx}>
@@ -425,6 +491,10 @@ export function PlaygroundPage() {
 
   // Filter providers by selected category
   const activeCategoryProviders = allProviders.filter(p => p.category === category)
+  const currentEndpoint =
+    category === 'local'
+      ? localRuntimeBridge.getProviderUrl(providerId)
+      : 'FastAPI Backend'
 
   return (
     <TooltipProvider>
@@ -491,7 +561,9 @@ export function PlaygroundPage() {
 
           {/* Sidebar Footer Stats */}
           <div className="p-3 border-t border-border/70 text-[11px] text-muted-foreground bg-muted/20 flex items-center justify-between">
-            <span>{conversations.length} conversation{conversations.length !== 1 ? 's' : ''}</span>
+            <span>
+              {conversations.length} conversation{conversations.length !== 1 ? 's' : ''}
+            </span>
             <Badge variant="outline" className="text-[9px] px-1 py-0">
               localStorage
             </Badge>
@@ -551,9 +623,13 @@ export function PlaygroundPage() {
                     <SelectItem key={p.id} value={p.id}>
                       <div className="flex items-center gap-1.5">
                         <span>{p.name}</span>
-                        {p.configured && (
+                        {p.category === 'local' ? (
+                          <span className="text-[9px] text-muted-foreground font-mono">
+                            (Localhost)
+                          </span>
+                        ) : p.configured ? (
                           <span className="h-1.5 w-1.5 rounded-full bg-emerald-500" />
-                        )}
+                        ) : null}
                       </div>
                     </SelectItem>
                   ))}
@@ -561,22 +637,66 @@ export function PlaygroundPage() {
               </Select>
 
               {/* Model Selector */}
-              <Select
-                value={modelId}
-                onValueChange={(val: string) => setModelId(val)}
-                disabled={loadingModels || availableModels.length === 0}
-              >
-                <SelectTrigger className="h-8 w-52 text-xs bg-background">
-                  <SelectValue placeholder={loadingModels ? 'Discovering models…' : 'Choose model'} />
-                </SelectTrigger>
-                <SelectContent className="max-h-60">
-                  {availableModels.map(m => (
-                    <SelectItem key={m} value={m}>
-                      {m}
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
+              <div className="flex items-center gap-1">
+                <Select
+                  value={modelId}
+                  onValueChange={(val: string) => setModelId(val)}
+                  disabled={loadingModels || availableModels.length === 0}
+                >
+                  <SelectTrigger className="h-8 w-52 text-xs bg-background">
+                    <SelectValue
+                      placeholder={
+                        loadingModels
+                          ? 'Detecting models…'
+                          : availableModels.length === 0
+                          ? 'No models installed'
+                          : 'Choose model'
+                      }
+                    />
+                  </SelectTrigger>
+                  <SelectContent className="max-h-60">
+                    {availableModels.map(m => (
+                      <SelectItem key={m} value={m}>
+                        <div className="flex items-center justify-between w-full gap-2">
+                          <span>{m}</span>
+                          {category === 'local' && (
+                            <Badge variant="outline" className="text-[9px] px-1 py-0">
+                              local
+                            </Badge>
+                          )}
+                        </div>
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+
+                {/* Refresh Models Button */}
+                <Tooltip>
+                  <TooltipTrigger asChild>
+                    <Button
+                      variant="ghost"
+                      size="icon"
+                      onClick={() =>
+                        fetchModelsForProvider(
+                          category,
+                          providerId,
+                          providerId === 'custom' ? customBaseUrl : undefined
+                        )
+                      }
+                      disabled={loadingModels}
+                      className="h-8 w-8 text-muted-foreground hover:text-foreground"
+                    >
+                      <RefreshCw className={`h-3.5 w-3.5 ${loadingModels ? 'animate-spin' : ''}`} />
+                      <span className="sr-only">Refresh models</span>
+                    </Button>
+                  </TooltipTrigger>
+                  <TooltipContent side="bottom" className="text-xs">
+                    {category === 'local'
+                      ? 'Re-scan installed models on your computer'
+                      : 'Refresh model catalog'}
+                  </TooltipContent>
+                </Tooltip>
+              </div>
 
               {/* Custom Base URL Input if custom provider */}
               {providerId === 'custom' && (
@@ -591,8 +711,47 @@ export function PlaygroundPage() {
               )}
             </div>
 
-            {/* Test Connection Button and Actions Dropdown */}
-            <div className="flex items-center gap-1.5">
+            {/* Architecture Badge, Test Button and Actions Dropdown */}
+            <div className="flex items-center gap-2">
+              {/* Architecture Indicator Badge */}
+              {category === 'local' ? (
+                localBridgeStatus?.status === 'connected' ? (
+                  <Badge
+                    variant="outline"
+                    className="hidden lg:flex items-center gap-1.5 text-[10px] font-normal border-emerald-500/30 bg-emerald-500/10 text-emerald-400 py-0.5"
+                  >
+                    <span className="h-1.5 w-1.5 rounded-full bg-emerald-500 animate-pulse" />
+                    <span>Direct Bridge: {currentEndpoint}</span>
+                  </Badge>
+                ) : localBridgeStatus?.status === 'cors_blocked' ? (
+                  <Badge
+                    variant="outline"
+                    onClick={() => setShowTroubleshooting(true)}
+                    className="hidden lg:flex items-center gap-1.5 text-[10px] font-normal border-amber-500/30 bg-amber-500/10 text-amber-400 py-0.5 cursor-pointer hover:bg-amber-500/20"
+                  >
+                    <AlertTriangle className="h-3 w-3" />
+                    <span>CORS Setup Required</span>
+                  </Badge>
+                ) : (
+                  <Badge
+                    variant="outline"
+                    onClick={() => setShowTroubleshooting(true)}
+                    className="hidden lg:flex items-center gap-1.5 text-[10px] font-normal border-destructive/30 bg-destructive/10 text-destructive py-0.5 cursor-pointer hover:bg-destructive/20"
+                  >
+                    <XCircle className="h-3 w-3" />
+                    <span>Localhost Offline</span>
+                  </Badge>
+                )
+              ) : (
+                <Badge
+                  variant="outline"
+                  className="hidden lg:flex items-center gap-1.5 text-[10px] font-normal border-primary/30 bg-primary/10 text-primary py-0.5"
+                >
+                  <ShieldCheck className="h-3 w-3" />
+                  <span>Cloud Gateway via FastAPI</span>
+                </Badge>
+              )}
+
               <Button
                 variant="outline"
                 size="sm"
@@ -605,17 +764,21 @@ export function PlaygroundPage() {
                 ) : (
                   <Server className="h-3 w-3 text-primary" />
                 )}
-                Test Node
+                {category === 'local' ? 'Test Localhost' : 'Test Node'}
               </Button>
 
               <DropdownMenu>
                 <DropdownMenuTrigger asChild>
-                  <Button variant="ghost" size="icon" className="h-8 w-8 text-muted-foreground hover:text-foreground">
+                  <Button
+                    variant="ghost"
+                    size="icon"
+                    className="h-8 w-8 text-muted-foreground hover:text-foreground"
+                  >
                     <MoreVertical className="h-4 w-4" />
                     <span className="sr-only">Conversation actions</span>
                   </Button>
                 </DropdownMenuTrigger>
-                <DropdownMenuContent align="end" className="w-48 text-xs">
+                <DropdownMenuContent align="end" className="w-52 text-xs">
                   <DropdownMenuLabel className="text-[11px]">Chat Actions</DropdownMenuLabel>
                   <DropdownMenuSeparator />
                   <DropdownMenuItem
@@ -641,7 +804,9 @@ export function PlaygroundPage() {
                       const url = URL.createObjectURL(blob)
                       const a = document.createElement('a')
                       a.href = url
-                      a.download = `${activeConversation.title.replace(/[^a-z0-9]/gi, '_').toLowerCase()}.json`
+                      a.download = `${activeConversation.title
+                        .replace(/[^a-z0-9]/gi, '_')
+                        .toLowerCase()}.json`
                       a.click()
                       URL.revokeObjectURL(url)
                       toast.success('Conversation exported.')
@@ -651,6 +816,15 @@ export function PlaygroundPage() {
                     <Download className="h-3.5 w-3.5 text-muted-foreground" />
                     Export Chat (.JSON)
                   </DropdownMenuItem>
+                  {category === 'local' && (
+                    <DropdownMenuItem
+                      onClick={() => setShowTroubleshooting(prev => !prev)}
+                      className="cursor-pointer gap-2"
+                    >
+                      <Terminal className="h-3.5 w-3.5 text-primary" />
+                      {showTroubleshooting ? 'Hide Setup Guide' : 'Show Local Setup Guide'}
+                    </DropdownMenuItem>
+                  )}
                   <DropdownMenuSeparator />
                   <DropdownMenuItem
                     onClick={() => {
@@ -670,13 +844,126 @@ export function PlaygroundPage() {
             </div>
           </div>
 
-          {/* Model Notice / Disclaimer Banner */}
-          {modelNotice && (
+          {/* Local Runtime Troubleshooting & Setup Guide Alert */}
+          {category === 'local' && showTroubleshooting && (
+            <div className="border-b border-border bg-card/90 px-4 py-3 text-xs">
+              <div className="flex items-start justify-between gap-3">
+                <div className="space-y-1.5 flex-1">
+                  <div className="flex items-center gap-2">
+                    <Terminal className="h-4 w-4 text-primary" />
+                    <span className="font-semibold text-foreground">
+                      Local Runtime Bridge Instructions ({providerId === 'ollama' ? 'Ollama' : 'llama.cpp'})
+                    </span>
+                    <Badge variant="outline" className="text-[10px]">
+                      Direct Browser → Localhost
+                    </Badge>
+                  </div>
+                  <p className="text-[11px] text-muted-foreground leading-relaxed">
+                    Model Gateway deployed on Render connects directly from your web browser to{' '}
+                    <code className="text-primary font-mono">{currentEndpoint}</code> on your computer.
+                    Your weights and prompts remain entirely on your machine.
+                  </p>
+
+                  {providerId === 'ollama' ? (
+                    <div className="pt-2 grid grid-cols-1 md:grid-cols-2 gap-2 text-[11px]">
+                      <div className="rounded border border-border/80 bg-zinc-950/60 p-2 space-y-1">
+                        <div className="font-medium text-zinc-300 flex items-center justify-between">
+                          <span>1. Start daemon & pull model</span>
+                        </div>
+                        <div className="font-mono text-[10px] text-zinc-400 flex items-center justify-between bg-zinc-900 px-2 py-1 rounded">
+                          <span>ollama pull llama3.2:1b</span>
+                          <Button
+                            variant="ghost"
+                            size="icon"
+                            onClick={() => handleCopyCommand('ollama pull llama3.2:1b')}
+                            className="h-5 w-5 text-zinc-400 hover:text-white"
+                          >
+                            <Copy className="h-3 w-3" />
+                          </Button>
+                        </div>
+                      </div>
+
+                      <div className="rounded border border-border/80 bg-zinc-950/60 p-2 space-y-1">
+                        <div className="font-medium text-zinc-300 flex items-center justify-between">
+                          <span>2. Enable browser CORS access</span>
+                          <span className="text-[9px] text-amber-400">Essential for Web</span>
+                        </div>
+                        <div className="font-mono text-[10px] text-zinc-400 flex items-center justify-between bg-zinc-900 px-2 py-1 rounded">
+                          <span>setx OLLAMA_ORIGINS "*"</span>
+                          <Button
+                            variant="ghost"
+                            size="icon"
+                            onClick={() => handleCopyCommand('setx OLLAMA_ORIGINS "*"')}
+                            className="h-5 w-5 text-zinc-400 hover:text-white"
+                          >
+                            <Copy className="h-3 w-3" />
+                          </Button>
+                        </div>
+                      </div>
+                    </div>
+                  ) : (
+                    <div className="pt-2 rounded border border-border/80 bg-zinc-950/60 p-2 space-y-1 text-[11px]">
+                      <div className="font-medium text-zinc-300">Start llama-server on port 8080:</div>
+                      <div className="font-mono text-[10px] text-zinc-400 flex items-center justify-between bg-zinc-900 px-2 py-1 rounded">
+                        <span>llama-server -m ./models/model.gguf --port 8080 --host 127.0.0.1</span>
+                        <Button
+                          variant="ghost"
+                          size="icon"
+                          onClick={() =>
+                            handleCopyCommand(
+                              'llama-server -m ./models/model.gguf --port 8080 --host 127.0.0.1'
+                            )
+                          }
+                          className="h-5 w-5 text-zinc-400 hover:text-white"
+                        >
+                          <Copy className="h-3 w-3" />
+                        </Button>
+                      </div>
+                    </div>
+                  )}
+                </div>
+
+                <div className="flex flex-col gap-1 shrink-0">
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    onClick={() =>
+                      fetchModelsForProvider(
+                        category,
+                        providerId,
+                        providerId === 'custom' ? customBaseUrl : undefined
+                      )
+                    }
+                    className="h-7 text-[11px] gap-1"
+                  >
+                    <RefreshCw className="h-3 w-3" />
+                    Retry Check
+                  </Button>
+                  <Button
+                    size="sm"
+                    variant="ghost"
+                    onClick={() => setShowTroubleshooting(false)}
+                    className="h-6 text-[10px] text-muted-foreground"
+                  >
+                    Dismiss
+                  </Button>
+                </div>
+              </div>
+            </div>
+          )}
+
+          {/* Model Notice Banner */}
+          {modelNotice && !showTroubleshooting && (
             <div className="border-b border-amber-500/20 bg-amber-500/10 px-4 py-1.5 text-[11px] text-amber-400 flex items-center justify-between">
               <span>{modelNotice}</span>
-              <Badge variant="outline" className="text-[9px] border-amber-500/30">
-                Notice
-              </Badge>
+              <Button
+                variant="ghost"
+                size="sm"
+                onClick={() => setShowTroubleshooting(true)}
+                className="h-5 px-1.5 text-[10px] text-amber-300 hover:underline"
+              >
+                Setup Guide
+              </Button>
             </div>
           )}
 
@@ -691,8 +978,9 @@ export function PlaygroundPage() {
                   Ready to test with {providerId.toUpperCase()}
                 </h3>
                 <p className="max-w-md text-xs text-muted-foreground leading-relaxed">
-                  Switch between Cloud (Gemini, OpenAI, Qwen) and Local (Ollama, llama.cpp) at will.
-                  The gateway routes all requests through a common interface without restarting.
+                  {category === 'local'
+                    ? `Direct browser bridge active. Prompts and tokens execute on your local machine at ${currentEndpoint}.`
+                    : 'Switch between Cloud (Gemini, OpenAI, Qwen) and Local (Ollama, llama.cpp) seamlessly without restarting the server.'}
                 </p>
                 <div className="flex flex-wrap justify-center gap-2 pt-2">
                   {[
@@ -718,27 +1006,34 @@ export function PlaygroundPage() {
 
                 if (msg.error) {
                   return (
-                    <div key={msg.id} className="flex gap-3 justify-start">
-                      <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-destructive/10 text-destructive border border-destructive/20">
+                    <div key={msg.id} className="flex flex-col items-center my-4">
+                      <Alert variant="destructive" className="max-w-2xl text-xs py-3">
                         <AlertCircle className="h-4 w-4" />
-                      </div>
-                      <div className="max-w-2xl space-y-2">
-                        <Alert variant="destructive" className="py-2.5">
-                          <AlertCircle className="h-4 w-4" />
-                          <AlertDescription className="text-xs font-mono">
-                            {msg.errorDetail}
-                          </AlertDescription>
-                        </Alert>
-                        <Button
-                          variant="outline"
-                          size="sm"
-                          onClick={() => handleRetry(index)}
-                          className="h-7 text-xs gap-1.5"
-                        >
-                          <RefreshCw className="h-3 w-3" />
-                          Retry Request
-                        </Button>
-                      </div>
+                        <AlertTitle className="text-xs font-semibold">Generation Error</AlertTitle>
+                        <AlertDescription className="text-xs mt-1 space-y-2">
+                          <p>{msg.content}</p>
+                          <div className="flex items-center gap-2 pt-1">
+                            <Button
+                              variant="outline"
+                              size="sm"
+                              onClick={() => handleRetry(index)}
+                              className="h-7 text-xs bg-background/50 hover:bg-background"
+                            >
+                              Retry Request
+                            </Button>
+                            {msg.category === 'local' && (
+                              <Button
+                                variant="ghost"
+                                size="sm"
+                                onClick={() => setShowTroubleshooting(true)}
+                                className="h-7 text-xs"
+                              >
+                                View Localhost Setup Guide
+                              </Button>
+                            )}
+                          </div>
+                        </AlertDescription>
+                      </Alert>
                     </div>
                   )
                 }
@@ -746,33 +1041,54 @@ export function PlaygroundPage() {
                 return (
                   <div
                     key={msg.id}
-                    className={`flex gap-3 ${isUser ? 'justify-end' : 'justify-start'}`}
+                    className={`flex gap-3 text-xs leading-relaxed ${
+                      isUser ? 'justify-end' : 'justify-start'
+                    }`}
                   >
                     {!isUser && (
-                      <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-primary/10 text-primary border border-primary/20">
+                      <div className="flex h-8 w-8 shrink-0 select-none items-center justify-center rounded-lg border border-primary/20 bg-primary/10 text-primary">
                         <Bot className="h-4 w-4" />
                       </div>
                     )}
 
                     <div
-                      className={`group relative max-w-2xl rounded-xl p-3.5 text-xs shadow-xs leading-relaxed ${
+                      className={`group relative max-w-[85%] md:max-w-[75%] rounded-lg p-3.5 shadow-xs ${
                         isUser
                           ? 'bg-primary text-primary-foreground font-normal'
-                          : 'bg-card border border-border text-foreground'
+                          : 'bg-card border border-border text-card-foreground'
                       }`}
                     >
-                      {/* Message Meta Info */}
+                      {/* Message Metadata Header */}
+                      <div className="flex items-center justify-between gap-4 mb-1.5 pb-1 border-b border-border/40 text-[10px] opacity-75">
+                        <span className="font-medium">
+                          {isUser
+                            ? 'You'
+                            : `${msg.providerName || msg.provider || 'AI'} • ${msg.model || ''}`}
+                        </span>
+                        <div className="flex items-center gap-1.5">
+                          {msg.category === 'local' && !isUser && (
+                            <Badge variant="outline" className="text-[9px] px-1 py-0 h-4">
+                              Localhost
+                            </Badge>
+                          )}
+                          <span>{new Date(msg.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</span>
+                        </div>
+                      </div>
+
+                      {/* Content */}
+                      <div className="break-words space-y-1">
+                        {renderMessageContent(msg.content)}
+                      </div>
+
+                      {/* Message Action Footer */}
                       {!isUser && (
-                        <div className="flex items-center justify-between pb-2 mb-2 border-b border-border/60 text-[10px] text-muted-foreground">
-                          <span className="font-semibold text-foreground">
-                            {msg.providerName || msg.provider} · {msg.model}
-                          </span>
+                        <div className="mt-2 pt-1.5 flex items-center justify-end gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
                           <Button
                             variant="ghost"
                             size="icon"
                             onClick={() => handleCopy(msg.content, msg.id)}
-                            className="h-5 w-5 text-muted-foreground hover:text-foreground"
-                            title="Copy assistant response"
+                            className="h-6 w-6 text-muted-foreground hover:text-foreground"
+                            title="Copy message"
                           >
                             {copiedId === msg.id ? (
                               <Check className="h-3 w-3 text-emerald-400" />
@@ -782,12 +1098,10 @@ export function PlaygroundPage() {
                           </Button>
                         </div>
                       )}
-
-                      <div>{renderMessageContent(msg.content)}</div>
                     </div>
 
                     {isUser && (
-                      <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-secondary text-secondary-foreground">
+                      <div className="flex h-8 w-8 shrink-0 select-none items-center justify-center rounded-lg border border-border bg-muted text-muted-foreground">
                         <User className="h-4 w-4" />
                       </div>
                     )}
@@ -796,51 +1110,59 @@ export function PlaygroundPage() {
               })
             )}
 
-            {/* Typing / Generating Indicator */}
             {generating && (
-              <div className="flex gap-3 justify-start">
-                <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-primary/10 text-primary border border-primary/20">
+              <div className="flex gap-3 text-xs justify-start items-center">
+                <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg border border-primary/20 bg-primary/10 text-primary">
                   <Bot className="h-4 w-4" />
                 </div>
-                <div className="rounded-xl border border-border bg-card p-3 text-xs text-muted-foreground flex items-center gap-2">
-                  <RefreshCw className="h-3 w-3 animate-spin text-primary" />
-                  <span>Streaming response from {providerId} ({modelId})…</span>
+                <div className="rounded-lg border border-border bg-card p-3 text-muted-foreground flex items-center gap-2">
+                  <RefreshCw className="h-3.5 w-3.5 animate-spin text-primary" />
+                  <span>
+                    Generating response via {category === 'local' ? 'Local Bridge' : 'Cloud Gateway'}…
+                  </span>
                 </div>
               </div>
             )}
-
             <div ref={messagesEndRef} />
           </div>
 
-          {/* Composer Input Area */}
-          <div className="border-t border-border bg-card/60 p-3">
-            <div className="relative rounded-lg border border-border bg-background focus-within:ring-1 focus-within:ring-primary shadow-xs">
-              <Textarea
-                ref={textareaRef}
-                value={inputMessage}
-                onChange={e => setInputMessage(e.target.value)}
-                onKeyDown={handleKeyDown}
-                placeholder={`Message ${providerId} · ${modelId || 'Select model'}…`}
-                className="min-h-[72px] resize-none border-0 bg-transparent p-3 text-xs focus-visible:ring-0 leading-relaxed"
-                disabled={generating}
-              />
-              <div className="flex items-center justify-between border-t border-border/50 bg-muted/20 px-3 py-1.5">
-                <span className="text-[10px] text-muted-foreground">
-                  Press <kbd className="rounded border border-border bg-background px-1 py-0.5 text-[9px]">Enter</kbd> to send, <kbd className="rounded border border-border bg-background px-1 py-0.5 text-[9px]">Shift+Enter</kbd> for newline
-                </span>
-                <Button
-                  onClick={() => handleSendMessage()}
-                  disabled={!inputMessage.trim() || generating}
-                  size="sm"
-                  className="h-7 px-3 text-xs gap-1.5 bg-primary text-primary-foreground hover:bg-primary/90"
-                >
-                  {generating ? (
-                    <RefreshCw className="h-3 w-3 animate-spin" />
-                  ) : (
+          {/* Prompt Input Box */}
+          <div className="p-3 md:p-4 border-t border-border bg-card/40">
+            <div className="flex flex-col gap-2">
+              <div className="relative rounded-lg border border-border bg-background focus-within:border-primary focus-within:ring-1 focus-within:ring-primary transition-all">
+                <Textarea
+                  ref={textareaRef}
+                  placeholder={
+                    category === 'local' && localBridgeStatus?.status !== 'connected'
+                      ? 'Local AI runtime is currently offline or blocked by CORS. See setup guide above…'
+                      : `Ask ${providerId.toUpperCase()} with ${modelId || 'selected model'}… (Shift+Enter for newline)`
+                  }
+                  value={inputMessage}
+                  onChange={e => setInputMessage(e.target.value)}
+                  onKeyDown={handleKeyDown}
+                  disabled={generating}
+                  className="min-h-[70px] max-h-48 resize-none border-0 bg-transparent text-xs p-3 focus-visible:ring-0 focus-visible:ring-offset-0"
+                />
+
+                <div className="flex items-center justify-between px-3 py-2 border-t border-border/50 bg-muted/20">
+                  <div className="flex items-center gap-2 text-[11px] text-muted-foreground">
+                    <span className="font-mono text-[10px]">
+                      {category === 'local' ? 'Localhost Bridge' : 'Cloud Gateway'}
+                    </span>
+                    <span>•</span>
+                    <span className="font-medium text-foreground">{modelId || 'No model chosen'}</span>
+                  </div>
+
+                  <Button
+                    onClick={() => handleSendMessage()}
+                    disabled={!inputMessage.trim() || generating || !modelId}
+                    size="sm"
+                    className="h-7 px-3 text-xs gap-1.5 bg-primary text-primary-foreground hover:bg-primary/90"
+                  >
+                    <span>Send</span>
                     <Send className="h-3 w-3" />
-                  )}
-                  Send
-                </Button>
+                  </Button>
+                </div>
               </div>
             </div>
           </div>
@@ -849,4 +1171,3 @@ export function PlaygroundPage() {
     </TooltipProvider>
   )
 }
-

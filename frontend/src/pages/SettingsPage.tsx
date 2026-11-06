@@ -8,16 +8,24 @@ import {
   Download,
   CheckCircle2,
   AlertCircle,
+  AlertTriangle,
   ExternalLink,
   RefreshCw,
   Terminal,
+  Cpu,
+  Copy,
+  Save,
+  RotateCcw,
 } from 'lucide-react'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle, CardFooter } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
+import { Input } from '@/components/ui/input'
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table'
 import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert'
-import { api } from '@/services/api'
+import { api, localRuntimeBridge } from '@/services/api'
+import { DEFAULT_OLLAMA_URL, DEFAULT_LLAMACPP_URL } from '@/services/localRuntimeBridge'
+import type { LocalRuntimeCheckResult } from '@/services/localRuntimeBridge'
 import { useGateway } from '@/hooks/useGateway'
 import { toast } from 'sonner'
 
@@ -25,6 +33,13 @@ export function SettingsPage() {
   const { hardware, fetchHardware } = useGateway()
   const [healthStatus, setHealthStatus] = useState<string>('checking')
   const [latencyMs, setLatencyMs] = useState<number | null>(null)
+
+  // Local Runtime Bridge states
+  const [ollamaUrl, setOllamaUrl] = useState<string>(localRuntimeBridge.getOllamaUrl())
+  const [llamacppUrl, setLlamacppUrl] = useState<string>(localRuntimeBridge.getLlamaCppUrl())
+  const [ollamaStatus, setOllamaStatus] = useState<LocalRuntimeCheckResult | null>(null)
+  const [llamacppStatus, setLlamacppStatus] = useState<LocalRuntimeCheckResult | null>(null)
+  const [pingingLocal, setPingingLocal] = useState<boolean>(false)
 
   const checkGatewayHealth = async () => {
     const start = performance.now()
@@ -40,9 +55,47 @@ export function SettingsPage() {
     }
   }
 
+  const pingLocalRuntimes = async () => {
+    setPingingLocal(true)
+    try {
+      const [oRes, lRes] = await Promise.all([
+        localRuntimeBridge.checkOllamaStatus(ollamaUrl),
+        localRuntimeBridge.checkLlamaCppStatus(llamacppUrl),
+      ])
+      setOllamaStatus(oRes)
+      setLlamacppStatus(lRes)
+    } catch (err) {
+      console.error('Failed to ping local bridge:', err)
+    } finally {
+      setPingingLocal(false)
+    }
+  }
+
   useEffect(() => {
     checkGatewayHealth()
+    pingLocalRuntimes()
   }, [])
+
+  const handleSaveLocalEndpoints = () => {
+    localRuntimeBridge.setOllamaUrl(ollamaUrl)
+    localRuntimeBridge.setLlamaCppUrl(llamacppUrl)
+    toast.success('Local runtime bridge endpoints saved.')
+    pingLocalRuntimes()
+  }
+
+  const handleResetLocalEndpoints = () => {
+    setOllamaUrl(DEFAULT_OLLAMA_URL)
+    setLlamacppUrl(DEFAULT_LLAMACPP_URL)
+    localRuntimeBridge.setOllamaUrl(DEFAULT_OLLAMA_URL)
+    localRuntimeBridge.setLlamaCppUrl(DEFAULT_LLAMACPP_URL)
+    toast.info('Local endpoints reset to defaults.')
+    pingLocalRuntimes()
+  }
+
+  const copyToClipboard = (text: string) => {
+    navigator.clipboard.writeText(text)
+    toast.success('Copied to clipboard.')
+  }
 
   const envVariables = [
     {
@@ -76,16 +129,16 @@ export function SettingsPage() {
     {
       name: 'OLLAMA_BASE_URL',
       configured: true,
-      role: 'Ollama Daemon Local Endpoint',
+      role: 'Ollama Daemon Local Endpoint (FastAPI proxy)',
       masked: 'http://127.0.0.1:11434',
-      notes: 'Online. Connected to local Ollama service (model: llama3.2:1b).',
+      notes: 'Fallback proxy URL. Direct browser bridge connects independently on client side.',
     },
     {
       name: 'LLAMACPP_BASE_URL',
       configured: true,
-      role: 'llama.cpp Server Local Endpoint',
+      role: 'llama.cpp Server Local Endpoint (FastAPI proxy)',
       masked: 'http://127.0.0.1:8080',
-      notes: 'Default local port. Keep llama-server terminal open during testing.',
+      notes: 'Fallback proxy URL. Direct browser bridge connects independently on client side.',
     },
     {
       name: 'PROVIDER_TIMEOUT_SECONDS',
@@ -135,18 +188,21 @@ export function SettingsPage() {
             Gateway Settings & Environment Diagnostics
           </h2>
           <p className="text-xs text-muted-foreground mt-0.5">
-            Inspect backend connectivity, environment configuration variables, and manage local browser state.
+            Inspect backend connectivity, environment configuration variables, and manage local browser runtime bridge.
           </p>
         </div>
 
         <Button
           variant="outline"
           size="sm"
-          onClick={checkGatewayHealth}
+          onClick={() => {
+            checkGatewayHealth()
+            pingLocalRuntimes()
+          }}
           className="h-8 text-xs gap-1.5"
         >
           <RefreshCw className="h-3.5 w-3.5" />
-          Ping Gateway
+          Ping All Nodes
         </Button>
       </div>
 
@@ -163,8 +219,8 @@ export function SettingsPage() {
                 healthStatus === 'operational'
                   ? 'success'
                   : healthStatus === 'checking'
-                    ? 'secondary'
-                    : 'destructive'
+                  ? 'secondary'
+                  : 'destructive'
               }
               className="text-xs uppercase"
             >
@@ -190,6 +246,126 @@ export function SettingsPage() {
                 {latencyMs !== null ? `${latencyMs} ms` : 'N/A'}
               </div>
             </div>
+
+            <div className="rounded-lg border border-border p-3 bg-background/50">
+              <div className="text-muted-foreground text-[10px] uppercase">Deployment Target</div>
+              <div className="text-base font-bold text-foreground mt-0.5">
+                Render / Local Dev
+              </div>
+            </div>
+          </div>
+        </CardContent>
+      </Card>
+
+      {/* Local Runtime Bridge Card (Visitor Computer) */}
+      <Card className="bg-card/70 border-border shadow-xs">
+        <CardHeader className="pb-3">
+          <div className="flex items-start justify-between">
+            <div>
+              <CardTitle className="text-sm font-semibold flex items-center gap-2">
+                <Cpu className="h-4 w-4 text-emerald-400" />
+                Local Runtime Bridge Configuration (Visitor Computer)
+              </CardTitle>
+              <CardDescription className="text-xs mt-1">
+                When Model Gateway is deployed on Render, your web browser connects directly to your own computer's local ports. No model weights or prompts travel through any remote server.
+              </CardDescription>
+            </div>
+            <Badge variant="outline" className="text-[10px] text-emerald-400 border-emerald-500/30">
+              Client-Direct Bridge
+            </Badge>
+          </div>
+        </CardHeader>
+        <CardContent className="space-y-4 text-xs">
+          <div className="grid gap-4 md:grid-cols-2">
+            {/* Ollama Endpoint */}
+            <div className="rounded-lg border border-border p-3 bg-background/50 space-y-2">
+              <div className="flex items-center justify-between">
+                <span className="font-semibold text-foreground">Ollama Localhost Endpoint</span>
+                {ollamaStatus?.status === 'connected' ? (
+                  <Badge variant="success" className="text-[9px] gap-1">
+                    <span className="h-1.5 w-1.5 rounded-full bg-emerald-400 animate-pulse" />
+                    Online ({ollamaStatus.models.length} model{ollamaStatus.models.length === 1 ? '' : 's'})
+                  </Badge>
+                ) : ollamaStatus?.status === 'cors_blocked' ? (
+                  <Badge variant="warning" className="text-[9px] gap-1">
+                    <AlertTriangle className="h-2.5 w-2.5" />
+                    CORS Required
+                  </Badge>
+                ) : (
+                  <Badge variant="secondary" className="text-[9px] text-zinc-400">
+                    Offline
+                  </Badge>
+                )}
+              </div>
+              <Input
+                value={ollamaUrl}
+                onChange={e => setOllamaUrl(e.target.value)}
+                placeholder="http://127.0.0.1:11434"
+                className="font-mono text-xs h-8"
+              />
+              <p className="text-[11px] text-muted-foreground leading-relaxed">
+                {ollamaStatus?.message || 'Default local daemon port 11434.'}
+              </p>
+            </div>
+
+            {/* llama.cpp Endpoint */}
+            <div className="rounded-lg border border-border p-3 bg-background/50 space-y-2">
+              <div className="flex items-center justify-between">
+                <span className="font-semibold text-foreground">llama.cpp Server Endpoint</span>
+                {llamacppStatus?.status === 'connected' ? (
+                  <Badge variant="success" className="text-[9px] gap-1">
+                    <span className="h-1.5 w-1.5 rounded-full bg-emerald-400 animate-pulse" />
+                    Active
+                  </Badge>
+                ) : (
+                  <Badge variant="secondary" className="text-[9px] text-zinc-400">
+                    Offline
+                  </Badge>
+                )}
+              </div>
+              <Input
+                value={llamacppUrl}
+                onChange={e => setLlamacppUrl(e.target.value)}
+                placeholder="http://127.0.0.1:8080"
+                className="font-mono text-xs h-8"
+              />
+              <p className="text-[11px] text-muted-foreground leading-relaxed">
+                {llamacppStatus?.message || 'Default llama-server port 8080.'}
+              </p>
+            </div>
+          </div>
+
+          <div className="flex items-center justify-between pt-1">
+            <div className="flex items-center gap-2">
+              <Button
+                size="sm"
+                onClick={handleSaveLocalEndpoints}
+                className="h-7 text-xs gap-1.5 bg-primary text-primary-foreground hover:bg-primary/90"
+              >
+                <Save className="h-3 w-3" />
+                Save Endpoints
+              </Button>
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={handleResetLocalEndpoints}
+                className="h-7 text-xs gap-1.5"
+              >
+                <RotateCcw className="h-3 w-3" />
+                Reset Defaults
+              </Button>
+            </div>
+
+            <Button
+              variant="ghost"
+              size="sm"
+              onClick={pingLocalRuntimes}
+              disabled={pingingLocal}
+              className="h-7 text-xs gap-1.5 text-muted-foreground hover:text-foreground"
+            >
+              <RefreshCw className={`h-3 w-3 ${pingingLocal ? 'animate-spin' : ''}`} />
+              Test Local Ports
+            </Button>
           </div>
         </CardContent>
       </Card>

@@ -10,6 +10,7 @@ import type {
   TestProviderRequest,
   TestProviderResponse,
 } from '@/types'
+import { localRuntimeBridge } from './localRuntimeBridge'
 
 // If frontend is served by FastAPI on port 8000, relative paths work directly.
 // If running in Vite dev mode on port 5173, point to backend at 127.0.0.1:8000.
@@ -37,7 +38,7 @@ async function handleResponse<T>(res: Response): Promise<T> {
 
 export const api = {
   getBaseUrl(): string {
-    return API_BASE || window.location.origin
+    return API_BASE || (typeof window !== 'undefined' ? window.location.origin : '')
   },
 
   async getHealth(): Promise<{ status: string; application: string; version: string }> {
@@ -47,7 +48,22 @@ export const api = {
 
   async getProviders(): Promise<ProvidersResponse> {
     const res = await fetch(`${API_BASE}/api/providers`)
-    return handleResponse(res)
+    const data = await handleResponse<ProvidersResponse>(res)
+    // Synchronize local endpoints with visitor's custom configuration
+    if (data && data.categories) {
+      for (const cat of data.categories) {
+        if (cat.id === 'local') {
+          for (const prov of cat.providers) {
+            if (prov.id === 'ollama') {
+              prov.default_url = localRuntimeBridge.getOllamaUrl()
+            } else if (prov.id === 'llamacpp') {
+              prov.default_url = localRuntimeBridge.getLlamaCppUrl()
+            }
+          }
+        }
+      }
+    }
+    return data
   },
 
   async getModels(
@@ -55,6 +71,12 @@ export const api = {
     provider: string,
     customBaseUrl?: string
   ): Promise<ModelsResponse> {
+    // Local providers connect directly from the browser to visitor's localhost
+    if (category === 'local') {
+      return localRuntimeBridge.getModels(provider, customBaseUrl)
+    }
+
+    // Cloud providers query FastAPI on Render with server-side API keys
     const params = new URLSearchParams({
       category,
       provider,
@@ -67,6 +89,12 @@ export const api = {
   },
 
   async testProvider(payload: TestProviderRequest): Promise<TestProviderResponse> {
+    // Local providers test connectivity directly from visitor's browser to local port
+    if (payload.category === 'local') {
+      return localRuntimeBridge.testConnection(payload.provider, payload.custom_base_url)
+    }
+
+    // Cloud providers test connectivity via FastAPI on Render
     const res = await fetch(`${API_BASE}/api/providers/test`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -76,6 +104,12 @@ export const api = {
   },
 
   async sendChat(payload: ChatRequestPayload): Promise<ChatResponsePayload> {
+    // Local providers execute chat directly in the browser against visitor's localhost
+    if (payload.category === 'local') {
+      return localRuntimeBridge.sendChat(payload)
+    }
+
+    // Cloud providers route chat via FastAPI on Render
     const res = await fetch(`${API_BASE}/api/chat`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -121,3 +155,4 @@ export const api = {
   },
 }
 
+export { localRuntimeBridge }

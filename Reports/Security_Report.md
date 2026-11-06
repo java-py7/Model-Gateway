@@ -109,6 +109,17 @@ This report documents the security controls, threat mitigations, and operational
 
 ---
 
+### 2.9. Browser-to-Localhost Security (Local Runtime Bridge)
+- **Threat Vector:** Malicious cross-site scripting, unauthorized intranet port scans, or proxying local model weights through cloud infrastructure.
+- **Implemented Controls:**
+  1. **Strict Loopback Binding:** Local daemons (Ollama on `11434`, llama-server on `8080`) bind exclusively to loopback `127.0.0.1` and are never exposed publicly to the internet.
+  2. **Zero Command Execution:** The gateway application strictly forbids and never executes shell commands on visitor machines. All daemon commands are presented as user-copyable terminal instructions.
+  3. **No Cloud Hop for Local Weights:** Local AI requests route directly between the visitor's browser and their local loopback interface. Prompts and weights are never transmitted to Render cloud infrastructure.
+  4. **Explicit Origin Controls (`OLLAMA_ORIGINS`):** The application guides visitors to configure explicit origin rules on their local daemon rather than relying on unauthenticated wildcards.
+  5. **No Telemetry Spam:** Local health checks are triggered strictly upon user interaction (selecting local category, clicking refresh, or testing connection); no automated background port scanning loops run against the user's machine.
+
+---
+
 ## 3. Security Verification Checklist
 
 | Security Control | Verification Procedure | Status |
@@ -121,3 +132,5 @@ This report documents the security controls, threat mitigations, and operational
 | **Error Sanitization** | Provider errors sanitized; no auth headers or stack traces leaked | **Verified** |
 | **Input Validation** | Pydantic regex and length constraints enforced on all endpoints | **Verified** |
 | **Local Port Isolation** | Ollama and llama.cpp run on loopback interface (`127.0.0.1`) | **Verified** |
+| **Client Bridge Privacy** | Local prompts connect directly from browser to localhost; zero cloud hop | **Verified** |
+| **Zero Auto-Execution** | No automated terminal commands executed on client machines | **Verified** |

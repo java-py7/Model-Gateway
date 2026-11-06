@@ -822,6 +822,7 @@ async def list_providers():
                         "configured": True,
                         "default_url": OLLAMA_URL,
                         "requires_custom_url": False,
+                        "is_local_bridge": True,
                     },
                     {
                         "id": "llamacpp",
@@ -830,6 +831,7 @@ async def list_providers():
                         "configured": True,
                         "default_url": LLAMACPP_URL,
                         "requires_custom_url": False,
+                        "is_local_bridge": True,
                     },
                 ],
             },
